@@ -90,8 +90,9 @@ public final class TraceTreeUtils {
 	 * @param model
 	 *            the model to trace the tree from
 	 * @return the root
+	 * @throws InterruptedException
 	 */
-	public static TraceNode createTree(TraceNode root, StacktraceModel model) {
+	public static TraceNode createTree(TraceNode root, StacktraceModel model) throws InterruptedException {
 		Fork rootFork = model.getRootFork();
 		for (Branch branch : rootFork.getBranches()) {
 			addBranch(root, branch);
@@ -150,7 +151,10 @@ public final class TraceTreeUtils {
 				typeText);
 	}
 
-	private static void addBranch(TraceNode root, Branch branch) {
+	private static void addBranch(TraceNode root, Branch branch) throws InterruptedException {
+		if (Thread.interrupted()) {
+			throw new InterruptedException();
+		}
 		StacktraceFrame firstFrame = branch.getFirstFrame();
 		TraceNode currentNode = getTraceNodeByStacktraceFrame(firstFrame);
 		root.addChild(currentNode);
@@ -162,7 +166,7 @@ public final class TraceTreeUtils {
 		addFork(currentNode, branch.getEndFork());
 	}
 
-	private static void addFork(TraceNode node, Fork fork) {
+	private static void addFork(TraceNode node, Fork fork) throws InterruptedException {
 		for (Branch branch : fork.getBranches()) {
 			addBranch(node, branch);
 		}
