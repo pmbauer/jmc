@@ -18,7 +18,9 @@ public class FlameGraphCalculator {
 	public Future<TraceNode> calculate(final IItemCollection items, final FrameSeparator separator) {
 		// the caller shouln't be aware of what's running
 		// when a new call comes in previous futures are invalidated
-		activeFuture.cancel(true);
+		if (activeFuture != null) {
+			activeFuture.cancel(true);
+		}
 		Callable<TraceNode> callable = () -> {
 			// check if params are identical to current run
 			// if not identical, cancel current run and queue new calculation
@@ -28,6 +30,7 @@ public class FlameGraphCalculator {
 			try {
 				return TraceTreeUtils.createTree(root, model);
 			} catch (InterruptedException e) {
+				System.out.println("Interrupted!");
 				return null;
 			}
 		};

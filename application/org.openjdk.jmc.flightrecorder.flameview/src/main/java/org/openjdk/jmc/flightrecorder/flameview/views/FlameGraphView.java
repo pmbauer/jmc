@@ -59,8 +59,8 @@ import java.util.Base64;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.logging.Level;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -98,11 +98,10 @@ import org.eclipse.ui.part.ViewPart;
 import org.openjdk.jmc.common.item.IItemCollection;
 import org.openjdk.jmc.common.util.StringToolkit;
 import org.openjdk.jmc.flightrecorder.flameview.FlameviewImages;
+import org.openjdk.jmc.flightrecorder.flameview.tree.FlameGraphCalculator;
 import org.openjdk.jmc.flightrecorder.flameview.tree.TraceNode;
-import org.openjdk.jmc.flightrecorder.flameview.tree.TraceTreeUtils;
 import org.openjdk.jmc.flightrecorder.stacktrace.FrameSeparator;
 import org.openjdk.jmc.flightrecorder.stacktrace.FrameSeparator.FrameCategorization;
-import org.openjdk.jmc.flightrecorder.stacktrace.StacktraceModel;
 import org.openjdk.jmc.flightrecorder.ui.FlightRecorderUI;
 import org.openjdk.jmc.flightrecorder.ui.common.ImageConstants;
 import org.openjdk.jmc.flightrecorder.ui.messages.internal.Messages;
@@ -152,7 +151,7 @@ public class FlameGraphView extends ViewPart implements ISelectionListener {
 				jsFlameviewColoring);
 	}
 
-	private static final ExecutorService MODEL_EXECUTOR = Executors.newFixedThreadPool(1);
+	private static final FlameGraphCalculator FLAMEGRAPH_CALCULATOR = new FlameGraphCalculator();
 	private FrameSeparator frameSeparator;
 
 	private Browser browser;
@@ -343,22 +342,19 @@ public class FlameGraphView extends ViewPart implements ISelectionListener {
 	}
 
 	private void rebuildModel(IItemCollection items) {
-		// Release old model before building the new
-		if (currentModelCalculator != null) {
-			currentModelCalculator.cancel(true);
+		Future<TraceNode> result = FLAMEGRAPH_CALCULATOR.calculate(items, frameSeparator);
+		try {
+			// TODO: check if this is blocking the display thread?
+			final TraceNode flameGraphRoot = result.get();
+			DisplayToolkit.inDisplayThread().execute(() -> {
+				if (flameGraphRoot != null) {
+					this.setModel(flameGraphRoot);
+				}
+			});
+		} catch (InterruptedException | ExecutionException e) {
+			handleModelBuildException(e);
+			return;
 		}
-		currentModelCalculator = getModelPreparer(items, frameSeparator, true);
-		currentModelCalculator.thenAcceptAsync(this::setModel, DisplayToolkit.inDisplayThread())
-				.exceptionally(FlameGraphView::handleModelBuildException);
-	}
-
-	private CompletableFuture<TraceNode> getModelPreparer(
-		final IItemCollection items, final FrameSeparator separator, final boolean materializeSelectedBranches) {
-		return CompletableFuture.supplyAsync(() -> {
-			StacktraceModel model = new StacktraceModel(threadRootAtTop, frameSeparator, items);
-			TraceNode root = TraceTreeUtils.createRootWithDescription(items, model.getRootFork().getBranchCount());
-			return TraceTreeUtils.createTree(root, model);
-		}, MODEL_EXECUTOR);
 	}
 
 	private void setModel(TraceNode root) {
