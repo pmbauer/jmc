@@ -56,12 +56,14 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.text.MessageFormat;
 import java.util.Base64;
+import java.util.Iterator;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.logging.Level;
+import java.util.logging.Logger;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -96,6 +98,7 @@ import org.eclipse.ui.PartInitException;
 import org.eclipse.ui.PlatformUI;
 import org.eclipse.ui.part.ViewPart;
 import org.openjdk.jmc.common.item.IItemCollection;
+import org.openjdk.jmc.common.item.IItemIterable;
 import org.openjdk.jmc.common.util.StringToolkit;
 import org.openjdk.jmc.flightrecorder.flameview.FlameviewImages;
 import org.openjdk.jmc.flightrecorder.flameview.tree.FlameGraphCalculator;
@@ -120,6 +123,7 @@ public class FlameGraphView extends ViewPart implements ISelectionListener {
 	private static final String TOOLTIP_PACKAGE = getFlameviewMessage(FLAMEVIEW_SELECT_HTML_TOOLTIP_PACKAGE);
 	private static final String TOOLTIP_SAMPLES = getFlameviewMessage(FLAMEVIEW_SELECT_HTML_TOOLTIP_SAMPLES);
 	private static final String TOOLTIP_DESCRIPTION = getFlameviewMessage(FLAMEVIEW_SELECT_HTML_TOOLTIP_DESCRIPTION);
+	private static final Logger LOGGER = FlightRecorderUI.getDefault().getLogger();
 	private static final String HTML_PAGE;
 	static {
 		// from: https://cdn.jsdelivr.net/gh/spiermar/d3-flame-graph@2.0.3/dist/d3-flamegraph.css
@@ -157,7 +161,6 @@ public class FlameGraphView extends ViewPart implements ISelectionListener {
 	private Browser browser;
 	private SashForm container;
 	private TraceNode currentRoot;
-	private CompletableFuture<TraceNode> currentModelCalculator;
 	private boolean threadRootAtTop = true;
 	private boolean icicleViewActive = true;
 	private IItemCollection currentItems;
@@ -329,12 +332,34 @@ public class FlameGraphView extends ViewPart implements ISelectionListener {
 	@Override
 	public void selectionChanged(IWorkbenchPart part, ISelection selection) {
 		if (selection instanceof IStructuredSelection) {
+			LOGGER.log(Level.INFO, ">>> " + part.getTitle());
+			LOGGER.log(Level.INFO, ">>> " + part.getSite().getId() + " " + part.getSite().getRegisteredName());
+			LOGGER.log(Level.INFO, ">>> " + ((IStructuredSelection) selection).getFirstElement());
 			Object first = ((IStructuredSelection) selection).getFirstElement();
-			setItems(AdapterUtil.getAdapter(first, IItemCollection.class));
+			IItemCollection items = AdapterUtil.getAdapter(first, IItemCollection.class);
+			debugIItemCollection(items);
+			setItems(items);
+			FlightRecorderUI.getDefault().getLogger().log(Level.INFO, ">>> ");
 		}
 	}
 
+	public static void debugIItemCollection(IItemCollection itemCollection) {
+		if (itemCollection == null) {
+			return;
+		}
+		Iterator<IItemIterable> it = itemCollection.iterator();
+		int size = 0;
+		IItemIterable currentItem = null;
+		while (it.hasNext()) {
+			currentItem = it.next();
+			LOGGER.log(Level.INFO, ">>>> Item count: " + size + " -> " + currentItem.getItemCount());
+			size++;
+		}
+		LOGGER.log(Level.INFO, ">>> IItemCollection total size: " + size);
+	}
+
 	private void setItems(IItemCollection items) {
+		FlightRecorderUI.getDefault().getLogger().log(Level.INFO, "Set items called");
 		if (items != null) {
 			currentItems = items;
 			rebuildModel(items);
@@ -348,6 +373,7 @@ public class FlameGraphView extends ViewPart implements ISelectionListener {
 			final TraceNode flameGraphRoot = result.get();
 			DisplayToolkit.inDisplayThread().execute(() -> {
 				if (flameGraphRoot != null) {
+					LOGGER.log(Level.INFO, ">>>> Changing display to " + flameGraphRoot.getName());
 					this.setModel(flameGraphRoot);
 				}
 			});
@@ -366,19 +392,21 @@ public class FlameGraphView extends ViewPart implements ISelectionListener {
 
 	private void setViewerInput(TraceNode root) {
 		Stream.of(exportActions).forEach((action) -> action.setEnabled(false));
+		LOGGER.log(Level.INFO, ">>>> SetViewerInput " + root.getName());
 		browser.setText(HTML_PAGE);
 		browser.addListener(SWT.Resize, event -> {
 			browser.execute("resizeFlameGraph();");
 		});
-
+//		browser.addListener(SWT.TE, listener);
 		browser.addProgressListener(new ProgressAdapter() {
 			@Override
 			public void completed(ProgressEvent event) {
-				browser.removeProgressListener(this);
+//				browser.removeProgressListener(this);
 				browser.execute(String.format("configureTooltipText('%s', '%s', '%s', '%s', '%s');", TABLE_COLUMN_COUNT,
 						TABLE_COLUMN_EVENT_TYPE, TOOLTIP_PACKAGE, TOOLTIP_SAMPLES, TOOLTIP_DESCRIPTION));
 
 				browser.execute(String.format("processGraph(%s, %s);", toJSon(root), icicleViewActive));
+				LOGGER.log(Level.INFO, ">>>> processGraph done " + root.getName());
 				Stream.of(exportActions).forEach((action) -> action.setEnabled(true));
 			}
 		});
