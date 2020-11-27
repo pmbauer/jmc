@@ -270,7 +270,7 @@ public class FlameGraphView extends ViewPart implements ISelectionListener {
 				new GroupByFlameviewAction(GroupActionType.ICICLE_GRAPH)};
 		exportActions = new ExportAction[] {new ExportAction(ExportActionType.SAVE_AS),
 				new ExportAction(ExportActionType.PRINT)};
-		Stream.of(exportActions).forEach((action) -> action.setEnabled(false));
+		Stream.of(exportActions).forEach((action) -> action.setEnabled(true));
 
 		// methodFormatter = new MethodFormatter(null, () -> viewer.refresh());
 		IMenuManager siteMenu = site.getActionBars().getMenuManager();
@@ -304,7 +304,6 @@ public class FlameGraphView extends ViewPart implements ISelectionListener {
 				e.doit = false;
 			}
 		});
-		Stream.of(exportActions).forEach((action) -> action.setEnabled(false));
 		browser.setText(HTML_PAGE);
 		browser.addListener(SWT.Resize, event -> {
 			browser.execute("resizeFlameGraph();");
