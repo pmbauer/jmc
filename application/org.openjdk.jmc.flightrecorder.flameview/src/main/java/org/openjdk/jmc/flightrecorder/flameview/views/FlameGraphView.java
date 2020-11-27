@@ -52,14 +52,12 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.text.MessageFormat;
+import java.time.Instant;
 import java.util.Base64;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.ThreadFactory;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -95,6 +93,7 @@ import org.eclipse.ui.PartInitException;
 import org.eclipse.ui.PlatformUI;
 import org.eclipse.ui.part.ViewPart;
 import org.openjdk.jmc.common.item.IItemCollection;
+import org.openjdk.jmc.common.util.Debouncer;
 import org.openjdk.jmc.common.util.StringToolkit;
 import org.openjdk.jmc.flightrecorder.flameview.FlameGraphJsonMarshaller;
 import org.openjdk.jmc.flightrecorder.flameview.FlameviewImages;
@@ -102,7 +101,6 @@ import org.openjdk.jmc.flightrecorder.stacktrace.FrameSeparator;
 import org.openjdk.jmc.flightrecorder.stacktrace.FrameSeparator.FrameCategorization;
 import org.openjdk.jmc.flightrecorder.stacktrace.tree.StacktraceTreeModel;
 import org.openjdk.jmc.flightrecorder.ui.FlightRecorderUI;
-import org.openjdk.jmc.flightrecorder.ui.ItemCollectionToolkit;
 import org.openjdk.jmc.flightrecorder.ui.common.ImageConstants;
 import org.openjdk.jmc.flightrecorder.ui.messages.internal.Messages;
 import org.openjdk.jmc.ui.CoreImages;
@@ -149,19 +147,6 @@ public class FlameGraphView extends ViewPart implements ISelectionListener {
 				jsFlameviewColoring);
 	}
 
-	private static final int MODEL_EXECUTOR_THREADS_NUMBER = 3;
-	private static final ExecutorService MODEL_EXECUTOR = Executors.newFixedThreadPool(MODEL_EXECUTOR_THREADS_NUMBER,
-			new ThreadFactory() {
-				private ThreadGroup group = new ThreadGroup("FlameGraphModelCalculationGroup");
-				private AtomicInteger counter = new AtomicInteger();
-
-				@Override
-				public Thread newThread(Runnable r) {
-					Thread t = new Thread(group, r, "FlameGraphModelCalculation-" + counter.getAndIncrement());
-					t.setDaemon(true);
-					return t;
-				}
-			});
 	private FrameSeparator frameSeparator;
 
 	private Browser browser;
@@ -172,8 +157,7 @@ public class FlameGraphView extends ViewPart implements ISelectionListener {
 	private boolean threadRootAtTop = true;
 	private boolean icicleViewActive = true;
 	private IItemCollection currentItems;
-	private volatile ModelState modelState = ModelState.NONE;
-	private ModelRebuildRunnable modelRebuildRunnable;
+	private Debouncer<Boolean> debouncer = new Debouncer<>();
 
 	private enum GroupActionType {
 		THREAD_ROOT(Messages.STACKTRACE_VIEW_THREAD_ROOT, IAction.AS_RADIO_BUTTON, CoreImages.THREAD),
@@ -194,10 +178,6 @@ public class FlameGraphView extends ViewPart implements ISelectionListener {
 		}
 	}
 
-	private enum ModelState {
-		NOT_STARTED, STARTED, FINISHED, NONE;
-	}
-
 	private class GroupByAction extends Action {
 		private final GroupActionType actionType;
 
@@ -214,7 +194,7 @@ public class FlameGraphView extends ViewPart implements ISelectionListener {
 			boolean newValue = isChecked() == GroupActionType.THREAD_ROOT.equals(actionType);
 			if (newValue != threadRootAtTop) {
 				threadRootAtTop = newValue;
-				triggerRebuildTask(currentItems);
+				refreshView(currentItems);
 			}
 		}
 	}
@@ -283,41 +263,6 @@ public class FlameGraphView extends ViewPart implements ISelectionListener {
 		}
 	}
 
-	private static class ModelRebuildRunnable implements Runnable {
-
-		private FlameGraphView view;
-		private IItemCollection items;
-		private volatile boolean isInvalid;
-
-		private ModelRebuildRunnable(FlameGraphView view, IItemCollection items) {
-			this.view = view;
-			this.items = items;
-		}
-
-		private void setInvalid() {
-			this.isInvalid = true;
-		}
-
-		@Override
-		public void run() {
-			view.modelState = ModelState.STARTED;
-			if (isInvalid) {
-				return;
-			}
-			StacktraceTreeModel treeModel = new StacktraceTreeModel(items, view.frameSeparator, !view.threadRootAtTop);
-			if (isInvalid) {
-				return;
-			}
-			String flameGraphJson = FlameGraphJsonMarshaller.toJson(treeModel);
-			if (isInvalid) {
-				return;
-			} else {
-				view.modelState = ModelState.FINISHED;
-				DisplayToolkit.inDisplayThread().execute(() -> view.setModel(items, flameGraphJson));
-			}
-		}
-	}
-
 	@Override
 	public void init(IViewSite site, IMemento memento) throws PartInitException {
 		super.init(site, memento);
@@ -376,32 +321,33 @@ public class FlameGraphView extends ViewPart implements ISelectionListener {
 	@Override
 	public void selectionChanged(IWorkbenchPart part, ISelection selection) {
 		if (selection instanceof IStructuredSelection) {
-			Object first = ((IStructuredSelection) selection).getFirstElement();
-			IItemCollection items = AdapterUtil.getAdapter(first, IItemCollection.class);
-			if (items == null) {
-				triggerRebuildTask(ItemCollectionToolkit.build(Stream.empty()));
-			} else if (!items.equals(currentItems)) {
-				triggerRebuildTask(items);
-			}
+			IItemCollection items = getItems((IStructuredSelection) selection);
+			refreshView(items);
 		}
 	}
 
-	private void triggerRebuildTask(IItemCollection items) {
-		// Release old model calculation before building a new
-		if (modelRebuildRunnable != null) {
-			modelRebuildRunnable.setInvalid();
+	private void refreshView(IItemCollection items) {
+		// check null before triggering the debouncer so we don't cancel running computation for nothing
+		if (items == null) {
+			return;
 		}
+		debouncer.execute(() -> {
+			System.out.println(Instant.now() + " Executing");
+			currentItems = items;
+			StacktraceTreeModel model = new StacktraceTreeModel(currentItems, frameSeparator, !threadRootAtTop);
+			String flameGraphJson = FlameGraphJsonMarshaller.toJson(model);
+			DisplayToolkit.inDisplayThread().execute(() -> setModel(currentItems, flameGraphJson));
+			return true;
+		}, 100);
+	}
 
-		currentItems = items;
-		modelState = ModelState.NOT_STARTED;
-		modelRebuildRunnable = new ModelRebuildRunnable(this, items);
-		if (!modelRebuildRunnable.isInvalid) {
-			MODEL_EXECUTOR.execute(modelRebuildRunnable);
-		}
+	private static IItemCollection getItems(IStructuredSelection selection) {
+		Object first = selection.getFirstElement();
+		return AdapterUtil.getAdapter(first, IItemCollection.class);
 	}
 
 	private void setModel(final IItemCollection items, final String json) {
-		if (ModelState.FINISHED.equals(modelState) && items.equals(currentItems) && !browser.isDisposed()) {
+		if (items.equals(currentItems) && !browser.isDisposed()) {
 			setViewerInput(json);
 		}
 	}
@@ -430,6 +376,7 @@ public class FlameGraphView extends ViewPart implements ISelectionListener {
 				browser.execute(String.format("processGraph(%s, %s);", json, icicleViewActive));
 				Stream.of(exportActions).forEach((action) -> action.setEnabled(true));
 				loaded = true;
+				System.out.println(Instant.now() + " Completed?");
 			}
 		});
 	}
