@@ -52,7 +52,6 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.text.MessageFormat;
-import java.time.Instant;
 import java.util.Base64;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
@@ -74,8 +73,6 @@ import org.eclipse.jface.viewers.IStructuredSelection;
 import org.eclipse.swt.SWT;
 import org.eclipse.swt.browser.Browser;
 import org.eclipse.swt.browser.BrowserFunction;
-import org.eclipse.swt.browser.ProgressAdapter;
-import org.eclipse.swt.browser.ProgressEvent;
 import org.eclipse.swt.custom.SashForm;
 import org.eclipse.swt.events.MenuDetectEvent;
 import org.eclipse.swt.events.MenuDetectListener;
@@ -307,6 +304,11 @@ public class FlameGraphView extends ViewPart implements ISelectionListener {
 				e.doit = false;
 			}
 		});
+		Stream.of(exportActions).forEach((action) -> action.setEnabled(false));
+		browser.setText(HTML_PAGE);
+		browser.addListener(SWT.Resize, event -> {
+			browser.execute("resizeFlameGraph();");
+		});
 	}
 
 	@Override
@@ -332,7 +334,6 @@ public class FlameGraphView extends ViewPart implements ISelectionListener {
 			return;
 		}
 		debouncer.execute(() -> {
-			System.out.println(Instant.now() + " Executing");
 			currentItems = items;
 			StacktraceTreeModel model = new StacktraceTreeModel(currentItems, frameSeparator, !threadRootAtTop);
 			String flameGraphJson = FlameGraphJsonMarshaller.toJson(model);
@@ -347,38 +348,13 @@ public class FlameGraphView extends ViewPart implements ISelectionListener {
 	}
 
 	private void setModel(final IItemCollection items, final String json) {
-		if (items.equals(currentItems) && !browser.isDisposed()) {
-			setViewerInput(json);
-		}
-	}
-
-	private void setViewerInput(String json) {
-		Stream.of(exportActions).forEach((action) -> action.setEnabled(false));
-		browser.setText(HTML_PAGE);
-		browser.addListener(SWT.Resize, event -> {
-			browser.execute("resizeFlameGraph();");
-		});
-
-		browser.addProgressListener(new ProgressAdapter() {
-			private boolean loaded = false;
-
-			@Override
-			public void changed(ProgressEvent event) {
-				if (loaded) {
-					browser.removeProgressListener(this);
-				}
-			}
-
-			@Override
-			public void completed(ProgressEvent event) {
+		if (!browser.isDisposed()) {
+			DisplayToolkit.inDisplayThread().execute(() -> {
 				browser.execute(String.format("configureTooltipText('%s', '%s', '%s', '%s', '%s');", TABLE_COLUMN_COUNT,
 						TABLE_COLUMN_EVENT_TYPE, TOOLTIP_PACKAGE, TOOLTIP_SAMPLES, TOOLTIP_DESCRIPTION));
 				browser.execute(String.format("processGraph(%s, %s);", json, icicleViewActive));
-				Stream.of(exportActions).forEach((action) -> action.setEnabled(true));
-				loaded = true;
-				System.out.println(Instant.now() + " Completed?");
-			}
-		});
+			});
+		}
 	}
 
 	private void saveFlameGraph() {
